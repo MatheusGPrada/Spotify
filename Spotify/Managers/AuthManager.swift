@@ -10,6 +10,8 @@ import Foundation
 final class AuthManager {
     static let shared = AuthManager()
     
+    private var refreshingToken = false
+    
     struct Constants {
         static let clientID = "49786c8a68fb47c4a80b019600c75d53"
         static let clientSecret = "739f130703ed4e7f98ec3314afb24312"
@@ -106,11 +108,33 @@ final class AuthManager {
         UserDefaults.standard.setValue(Date().addingTimeInterval(TimeInterval(result.expires_in)), forKey: "expirationDate")
     }
     
+    private var onRefreshBlocks = [((String) -> Void)]()
+    
+    public func withValidToken(completion: @escaping (String) -> Void) {
+        guard !refreshingToken else {
+            onRefreshBlocks.append(completion)
+            return
+        }
+        if shoudlRefreshToken {
+            refreshIfNeeded { [weak self] success in
+                    if let token = self?.accessToken, success {
+                        completion(token)
+                    }
+            }
+        } else if let token = accessToken {
+            completion(token)
+        }
+    }
+    
     public func refreshIfNeeded(completion: @escaping (Bool) -> Void) {
-//        guard shouldRefreshtoken else {
-//            completion(true)
-//            return
-//        }
+        guard !refreshingToken else {
+            return
+        }
+        
+        guard shoudlRefreshToken else {
+            completion(true)
+            return
+        }
         
         guard let refreshToken = self.refreshToken else {
             return
@@ -119,6 +143,8 @@ final class AuthManager {
         guard let url = URL(string: Constants.tokenAPIURL) else {
             return
         }
+        
+        refreshingToken = true
         
         var components = URLComponents()
         components.queryItems = [
@@ -142,6 +168,7 @@ final class AuthManager {
         request.setValue("Basic \(base64String)", forHTTPHeaderField: "Authorization")
         
         let task = URLSession.shared.dataTask(with: request) {[weak self]  data, _, error in
+            self?.refreshingToken = false
             guard let data = data, error == nil else {
                 completion(false)
                 return
@@ -149,6 +176,8 @@ final class AuthManager {
 
             do {
                 let result = try JSONDecoder().decode(AuthResponse.self, from: data)
+                self?.onRefreshBlocks.forEach { $0(result.access_token) }
+                self?.onRefreshBlocks.removeAll()
                 self?.cacheToken(result: result)
                 completion(true)
             } catch {
